@@ -9,7 +9,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${fileDirname}/${workspaceFolderBasename}",
-            "args": ["images/StarStrip.png", "images/star_mask.png", "result.png" , "true", "75", "16"],
+            "args": ["images/TestImage.png", "images/and_mask.png", "result.png" , "true", "75", "16"],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],

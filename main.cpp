@@ -1,4 +1,23 @@
-// Copyright 2023 Nam Hoang
+//--------------------------------------------------------------------
+//
+// Copyright (C) 2023 raodm@miamiOH.edu
+//
+// Miami University makes no representations or warranties about the
+// suitability of the software, either express or implied, including
+// but not limited to the implied warranties of merchantability,
+// fitness for a particular purpose, or non-infringement.  Miami
+// University shall not be liable for any damages suffered by licensee
+// as a result of using, result of using, modifying or distributing
+// this software or its derivatives.
+//
+// By using or copying this Software, Licensee agrees to abide by the
+// intellectual property laws, and all other applicable laws of the
+// U.S., and the terms of GNU General Public License (version 3).
+//
+// Authors:   Dhananjai M. Rao          raodm@miamioh.edu
+//
+//---------------------------------------------------------------------
+
 #include <iostream>
 #include <string>
 #include <fstream>
@@ -11,6 +30,7 @@
 #include <numeric>
 #include <omp.h>
 #include "PNG.h"
+#include "MatchedRect.h"
 
 // It is ok to use the following namespace delarations in C++ source
 // files only. They must never be used in header files.
@@ -18,124 +38,180 @@ using namespace std;
 using namespace std::string_literals;
 
 /**
- * Compute the average color of the background region (black region)
+ * Helper method to compute the average background pixel color for a given 
+ * region of the image based on a max. 
  * 
-*/
-Pixel computeBackgroundPixel(const PNG& img1, const PNG& mask, 
-                            const int startRow, const int startCol,
-                            const int maxRow, const int maxCol) {
+ * \param[in] img1 The image whose region is used to be used to compute the
+ * average pixel color.
+ * 
+ * \param[in] mask The mask to be used to determine the pixels that logically
+ * constitute the background.
+ * 
+ * \param[in] startRow The starting row in img1
+ * 
+ * \param[in] endRow The starting column in img1 
+ * 
+ * \param[in] maxRow The maximum number of rows from the starting row to be used
+ * to compute the background. This is zero-based to ensure that the computation
+ * does not exceed the image size.
+ * 
+ * \param[in] maxCol The maximum number of columns from the starting column to be 
+ * used to compute the background. This is zero-based to ensure that the 
+ * computation does not exceed the image size.
+ * 
+ * \return Returns the average pixel color for the given region.
+ */
+Pixel computeBackgroundPixel(const PNG& img1, const PNG& mask,
+        const int startRow, const int startCol,
+        const int maxRow, const int maxCol) {
     const Pixel Black{ .rgba = 0xff'00'00'00U };
     int red = 0, blue = 0, green = 0, count = 0;
     for (int row = 0; (row < maxRow); row++) {
         for (int col = 0; (col < maxCol); col++) {
             if (mask.getPixel(row, col).rgba == Black.rgba) {
-                const auto pix = img1.getPixel(row + startRow, col + startCol); 
-                red += pix.color.red;
+                const auto pix = img1.getPixel(row + startRow, col + startCol);
+                red   += pix.color.red;
                 green += pix.color.green;
-                blue += pix.color.blue;
+                blue  += pix.color.blue;
                 count++;
             }
         }
     }
-    const unsigned char avgRed = (red / count), 
-                        avgGreen = (green / count), 
-                        avgBlue = (blue / count); 
-    return {.color = {avgRed, avgGreen, avgBlue, 0}};
+    // Compute the average color for each of the channels. 
+    const unsigned char avgRed  = (red / count), avgGreen = (green / count),
+                        avgBlue = (blue / count);
+    return {.color = {avgRed, avgGreen, avgBlue, 255}};
 }
 
 /**
- * Determine if the two pixels are of the same shade 
- * (the rgb value difference between the two pixels are within certain range)
-*/
-bool sameShade(const Pixel& pixel1, const Pixel& pixel2, const int tolerance) {
-    const int diffRed = abs(static_cast<int>(pixel1.color.red) 
-        - static_cast<int>(pixel2.color.red));
-    const int diffGreen = abs(static_cast<int>(pixel1.color.green) 
-        - static_cast<int>(pixel2.color.green));
-    const int diffBlue = abs(static_cast<int>(pixel1.color.blue) 
-        - static_cast<int>(pixel2.color.blue));
-    return (diffRed < tolerance && diffGreen < tolerance) 
-        && (diffBlue < tolerance);
-}
-
-/**
- * Count the number of matching pixels in a given range
-*/
-int calcNetMatch(const PNG& img1, const PNG& mask, 
+ * Helper method to compute the average background pixel color for a given 
+ * region of the image based on a max. 
+ * 
+ * \param[in] img1 The image whose region is used to be used to compute the
+ * average pixel color.
+ * 
+ * \param[in] mask The mask to be used to determine the pixels that logically
+ * constitute the background.
+ * 
+ * \param[in] startRow The starting row in img1
+ * 
+ * \param[in] endRow The starting column in img1 
+ * 
+ * \param[in] maxRow The maximum number of rows from the starting row to be used
+ * to compute the background. This is zero-based to ensure that the computation
+ * does not exceed the image size.
+ * 
+ * \param[in] maxCol The maximum number of columns from the starting column to be 
+ * used to compute the background. This is zero-based to ensure that the 
+ * computation does not exceed the image size.
+ * 
+ * \param[in] tolerance The acceptable tolerance on the red, green, or blue
+ * channels for each pixel.
+ * 
+ * \return Returns the average pixel color for the given region.
+ */
+int getMatchingPixCount(const PNG& img1, const PNG& mask,
         const int startRow, const int startCol,
-        const int maxRow, const int maxCol, 
-        const Pixel& avgPixel, const int tolerance) {
-    // Prepare
-    int countMatch = 0;
+        const int maxRow, const int maxCol, const int tolerance) {
+    const auto inTolerance = [&tolerance](int c1, int c2) 
+        { return std::abs(c1 - c2) < tolerance; };
     const Pixel Black{ .rgba = 0xff'00'00'00U };
-    // Count matching pixels
+
+    // First compute the average background pixel color.
+    const Pixel bgPix = computeBackgroundPixel(img1, mask, startRow, startCol, 
+        maxRow, maxCol);
+    int matchingPixelCount = 0;
     for (int row = 0; (row < maxRow); row++) {
         for (int col = 0; (col < maxCol); col++) {
-            // get the current pixel
-            const auto pix = img1.getPixel(startRow + row, startCol + col);
-            // check same shade with the average pixel
-            bool hasSameShade = sameShade(pix, avgPixel, tolerance);
-            // check matching pixel
-            if ((mask.getPixel(row, col).rgba == Black.rgba && hasSameShade) 
-            || (mask.getPixel(row, col).rgba != Black.rgba && !hasSameShade)) {
-                countMatch++;
-            }
+            const auto imgPix  = img1.getPixel(row + startRow, col + startCol);
+            const auto maskPix = mask.getPixel(row, col);
+            const bool isPixDiff =  
+                (inTolerance(imgPix.color.red,   bgPix.color.red)   &&
+                 inTolerance(imgPix.color.green, bgPix.color.green) &&
+                 inTolerance(imgPix.color.blue,  bgPix.color.blue));
+            const int addSub  = (maskPix.rgba == Black.rgba) ? -1 : 1;
+            matchingPixelCount += addSub * (isPixDiff ? -1 : 1);
+            /*
+            std::cout << row << '\t' << col << '\t'
+                      << "(" << (int) imgPix.color.red << ',' << (int) imgPix.color.green
+                      << ',' << (int) imgPix.color.blue << ")\t("
+                      << (int) maskPix.color.red << ',' << (int) maskPix.color.green
+                      << ',' << (int) maskPix.color.blue << '\t' << matchingPixelCount
+                      << std::endl;
+            */
         }
     }
-    // Result
-    return countMatch - (maxRow * maxCol - countMatch);
+    return matchingPixelCount;
 }
 
-void drawBox(PNG& png, int row, int col, int width, int height) {
-    // Draw horizontal lines
-    for (int i = 0; (i < width); i++) {
-        png.setRed(row, col + i); 
-        png.setRed(row + height - 1, col + i);
+/**
+ * This helper method is given to draw a rectangular box around a matching 
+ * region.
+ * 
+ * \param[in] img The image in which the red box is to be drawn.
+ * 
+ * \param[in] box The region of the box where the red box is to be drawn.
+ */
+void drawRedBox(PNG& img, const MatchedRect& box) {
+    // Draw horizontal lines for the box.
+    for (int col = box.col1; (col < box.col2); col++) {
+        img.setRed(box.row1, col);
+        img.setRed(box.row2 - 1, col);
     }
-    // Draw vertical lines
-    for (int i = 0; (i < height); i++) { 
-        png.setRed(row + i, col); 
-        png.setRed(row + i, col + width - 1);
-    }
+    // Draw vertical lines for the box.
+    for (int row = box.row1; (row < box.row2); row++) {
+        img.setRed(row, box.col1);
+        img.setRed(row, box.col2);
+    }    
 }
 
-bool pointInRegion(int pointRow, int pointCol, int regRow, int regCol, 
-    int regWidth, int regHeight) {
-    return (regRow <= pointRow && pointRow <= regRow + regHeight)
-        && (regCol <= pointCol && pointCol <= regCol + regWidth);
-}
-
-void processPotentialRegion(PNG& png, int row, int col, int width, int height, 
-    vector<vector<int>>& regions) {
-    // prepare
-    vector<vector<int>> offsets = 
-        {{0, 0}, {height - 1, 0}, {0, width - 1}, {height - 1, width - 1}};
-
-    // check if this new region is overlap by any existsing regions
-    for (const auto& region : regions) {
-        for (const auto& offset : offsets) {
-            if (pointInRegion(row + offset[0], col + offset[1], 
-                region[0], region[1], width, height)) {
-                    // the point is in an existing region -> stop
-                    return;
-            }
-        }
+/**
+ * Helper method to check if a given region in an image matches the mask.
+ * 
+ * \param[in] img The main image for checking. A box is drawn in this image if
+ * the given srchRgn matches.
+ * 
+ * \param[in] mask The mask image to be used.
+ * 
+ * \param[in] mrl The list of previous matched rectangular regions. These 
+ * regions are to be ignored. 
+ * 
+ * \param[in] srchRgn The new rectangular region in the main img to be checked 
+ * for a match.
+ * 
+ * \param[in] pixMatchNeeded The number of matching pixels needed to determine
+ * if the specified region is a match.
+ * 
+ * \param[in] tolerance The absolute acceptable difference between each color
+ * channel when comparing  
+ */
+bool checkMatchRegion(PNG& img, const PNG& mask, MatchedRectList& mrl, 
+    const MatchedRect& srchRgn, const int pixMatchNeeded, const int tolerance) {
+    if (mrl.isMatched(srchRgn)) {
+        // Current search rgion is already part of a region
+        // matched earlier in this method (same as thread).
+        return false;  // not matched
     }
 
-    // if pass all check, then add to result
-    regions.push_back({row, col});
-
-    // draw a red line to cover
-    drawBox(png, row, col, width, height);
+    // Next compute the pixels that match based on tolerance
+    const int matchingPixs = getMatchingPixCount(img, mask, srchRgn.row1,
+        srchRgn.col1, srchRgn.row2 - srchRgn.row1, 
+        srchRgn.col2 - srchRgn.col1, tolerance);
+    if (matchingPixs > pixMatchNeeded) {
+        // Found a matching region.
+        mrl.push_back(srchRgn);  // add matched region to list of matches
+        return true;  // found a matching region!
+    }
+    return false;  // no match
 }
 
-void printResult(const vector<vector<int>>& regions, int width, int height) {
-    for (const auto& region : regions) {
-        const int row = region[0], col = region[1];
-        cout << "sub-image matched at: " << row << ", " << col << ", " 
-            << row + height << ", " << col + width << endl;
+void processResult(MatchedRectList& mrl, PNG& img) {
+    // For each rectangular in a sorted order
+    for (const auto& srchRgn : mrl) {
+        // Process each matched region by drawing and printing
+        std::cout << srchRgn << std::endl;
+        drawRedBox(img, srchRgn);
     }
-    cout << "Number of matches: " << regions.size() << endl;
 }
 
 /**
@@ -145,8 +221,8 @@ void printResult(const vector<vector<int>>& regions, int width, int height) {
  * \param[in] mainImageFile The PNG image in which the specified searchImage 
  * is to be found and marked (for example, this will be "Flag_of_the_US.png")
  * 
- * \param[in] srchImageFile The PNG sub-image for which we will be searching
- * in the main image (for example, this will be "star.png" or "start_mask.png") 
+ * \param[in] maskImageFile The PNG sub-image for which we will be searching
+ * in the main image (for example, this will be "star_mask.png") 
  * 
  * \param[in] outImageFile The output file to which the mainImageFile file is 
  * written with search image file highlighted.
@@ -162,44 +238,37 @@ void printResult(const vector<vector<int>>& regions, int width, int height) {
  * channel when comparing  
  */
 void imageSearch(const std::string& mainImageFile,
-                const std::string& srchImageFile, 
+                const std::string& maskImageFile, 
                 const std::string& outImageFile, const bool isMask = true, 
                 const int matchPercent = 75, const int tolerance = 32) {
-    // Implement this method using various methods or even better
-    // use an object-oriented approach.
-
-    // Load the image files into memory
-    PNG searchImg, subImg;
-    searchImg.load(mainImageFile);
-    subImg.load(srchImageFile);
-    PNG resImg(searchImg);
-
-    // sub image width and height
-    int subWidth = subImg.getWidth(), subHeight = subImg.getHeight();
-    // a vector containt all regions founded in format of [row, col]
-    vector<vector<int>> regs;
-
-    // Scan for region
-    for (int row = 0; row < searchImg.getHeight() - subHeight + 1; row++) {
-        for (int col = 0; col < searchImg.getWidth() - subWidth + 1; col++) {
-            // average pixel in this region
-            Pixel avgPixel = computeBackgroundPixel(searchImg, subImg, 
-                row, col, subHeight, subWidth);
-            // calculate netmatch by verifying match/mismatch pixels
-            int netMatch = calcNetMatch(searchImg, subImg, row, 
-                col, subHeight, subWidth, avgPixel, tolerance);
-            // see if this is a match
-            if (netMatch > subHeight * subWidth * matchPercent / 100.0) {
-                // found a potential match
-                processPotentialRegion(resImg, row, col, 
-                    subWidth, subHeight, regs);
-            }
+    // Load the main image and the mask to be used.
+    PNG img, mask;
+    img.load(mainImageFile);
+    mask.load(maskImageFile);
+    // The following matched-rectangle-list holds the list of rectangular
+    // regions in the image that have already been matched.
+    MatchedRectList mrl;
+    const int maxRow = img.getHeight() - mask.getHeight();
+    const int maxCol = img.getWidth()  - mask.getWidth();
+    const int pixMatchNeeded = mask.getBufferSize() * matchPercent / 400;
+    // Multi-threaded searching image row-by-row and column-by-column 
+    // boxing out matching regions
+    for (int row = 0; (row <= maxRow); row++) {
+        for (int col = 0; (col <= maxCol); col++) {
+            // Create a rectangle representing the region we are going to check
+            // for a matching image.
+            const MatchedRect srchRegion(row, col,
+                std::min(img.getWidth()  - col, mask.getWidth()),
+                std::min(img.getHeight() - row, mask.getHeight()));
+            // Use an helper method to perform the check.
+            checkMatchRegion(img, mask, mrl, srchRegion, pixMatchNeeded, 
+                             tolerance);
         }
     }
-    // Final stat
-    printResult(regs, subWidth, subHeight);
-    // Write out result image
-    resImg.write(outImageFile);
+    // Finally, print some result and write out result image
+    processResult(mrl, img);
+    std::cout << "Number of matches: " << mrl.size() << std::endl;
+    img.write(outImageFile);
 }
 
 /**
