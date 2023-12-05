@@ -187,7 +187,13 @@ void drawRedBox(PNG& img, const MatchedRect& box) {
  */
 bool checkMatchRegion(PNG& img, const PNG& mask, MatchedRectList& mrl, 
     const MatchedRect& srchRgn, const int pixMatchNeeded, const int tolerance) {
-    if (mrl.isMatched(srchRgn)) {
+    // Check for matching regions
+    bool matched;
+#pragma omp critical(resultVector) 
+{
+    matched = mrl.isMatched(srchRgn);
+}
+    if (matched) {
         // Current search rgion is already part of a region
         // matched earlier in this method (same as thread).
         return false;  // not matched
@@ -199,18 +205,26 @@ bool checkMatchRegion(PNG& img, const PNG& mask, MatchedRectList& mrl,
         srchRgn.col2 - srchRgn.col1, tolerance);
     if (matchingPixs > pixMatchNeeded) {
         // Found a matching region.
+        // std::cout << srchRgn << std::endl;
+#pragma omp critical(drawing)
+        drawRedBox(img, srchRgn);  // hope this won't cause a race condition
+#pragma omp critical(resultVector)
+    {
         mrl.push_back(srchRgn);  // add matched region to list of matches
+    }
         return true;  // found a matching region!
     }
     return false;  // no match
 }
 
 void processResult(MatchedRectList& mrl, PNG& img) {
+    // Sort the result
+    std::sort(mrl.begin(), mrl.end());
     // For each rectangular in a sorted order
     for (const auto& srchRgn : mrl) {
         // Process each matched region by drawing and printing
         std::cout << srchRgn << std::endl;
-        drawRedBox(img, srchRgn);
+        // drawRedBox(img, srchRgn);
     }
 }
 
@@ -253,16 +267,17 @@ void imageSearch(const std::string& mainImageFile,
     const int pixMatchNeeded = mask.getBufferSize() * matchPercent / 400;
     // Multi-threaded searching image row-by-row and column-by-column 
     // boxing out matching regions
+#pragma omp parallel for default(shared)
     for (int row = 0; (row <= maxRow); row++) {
         for (int col = 0; (col <= maxCol); col++) {
-            // Create a rectangle representing the region we are going to check
-            // for a matching image.
+            // Create a rectangle representing the region we are going to 
+            // check for a matching image.
             const MatchedRect srchRegion(row, col,
                 std::min(img.getWidth()  - col, mask.getWidth()),
                 std::min(img.getHeight() - row, mask.getHeight()));
             // Use an helper method to perform the check.
             checkMatchRegion(img, mask, mrl, srchRegion, pixMatchNeeded, 
-                             tolerance);
+                            tolerance);
         }
     }
     // Finally, print some result and write out result image
