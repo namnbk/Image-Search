@@ -1,5 +1,5 @@
 # A High Performing Image Searching Program
-Image search programming with mask images
+Identify and mark (with a red-box) occurrences of a given sub-image in a larger image 
 
 ## Overview
 * The image search program must be designed to handle searching for matches using an image “mask”. An image mask is a black-and-white image that essentially represents a pattern to search for
