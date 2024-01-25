@@ -1,4 +1,4 @@
-# An Image Checker Program - CSE443
+# An Image Checker Program 
 Image search programming with mask images
 
 ## Overview
