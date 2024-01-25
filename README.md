@@ -1,4 +1,4 @@
-# An Image Checker Program 
+# A High Performing Image Searching Program
 Image search programming with mask images
 
 ## Overview
